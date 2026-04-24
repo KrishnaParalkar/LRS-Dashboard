@@ -1,0 +1,229 @@
+# =============================================================================
+# LRS Dashboard - Docker Compose
+# Combines Redash (data visualization) + Ralph LRS (Learning Record Store)
+# =============================================================================
+#
+# Services:
+#   - Ralph LRS        → http://localhost:8100  (xAPI Learning Record Store)
+#   - Redash            → http://localhost:5000  (Dashboard / Data Visualization)
+#   - Redash (nginx)    → http://localhost:80    (Production proxy)
+#   - Elasticsearch     → http://localhost:9200  (Shared backend)
+#   - PostgreSQL        → localhost:5432         (Redash database)
+#   - Redis             → localhost:6379         (Redash cache/queue)
+#
+# Quick Start:
+#   1. cp .env.example .env
+#   2. docker compose up -d
+#   3. docker compose run --rm redash-server create_db
+#   4. Open http://localhost:5000 (Redash) and http://localhost:8100 (Ralph)
+# =============================================================================
+
+# ---------------------
+# Redash service anchor
+# ---------------------
+x-redash-service: &redash-service
+  image: redash/redash:${REDASH_VERSION:-26.3.0}
+  depends_on:
+    postgres:
+      condition: service_started
+    redis:
+      condition: service_started
+  env_file:
+    - .env
+  restart: always
+  networks:
+    - lrs-network
+
+services:
+
+  # ===========================================================================
+  # RALPH LRS
+  # ===========================================================================
+
+  ralph:
+    platform: linux/amd64
+    image: fundocker/ralph:${RALPH_VERSION:-latest}
+    container_name: ralph-lrs
+    command: ralph runserver -b es
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      RALPH_APP_DIR: /app/.ralph
+      RALPH_RUNSERVER_BACKEND: es
+      RALPH_RUNSERVER_HOST: 0.0.0.0
+      RALPH_RUNSERVER_PORT: 8100
+      RALPH_BACKENDS__LRS__ES__HOSTS: http://elasticsearch:9200
+      RALPH_BACKENDS__LRS__ES__DEFAULT_INDEX: statements
+      RALPH_BACKENDS__LRS__ES__CLIENT_OPTIONS__verify_certs: "false"
+      RALPH_AUTH_FILE: /app/.ralph/auth.json
+    volumes:
+      - ralph-data:/app/.ralph
+    ports:
+      - "${RALPH_PORT:-8100}:8100"
+    restart: unless-stopped
+    networks:
+      - lrs-network
+    healthcheck:
+      test: curl --fail http://localhost:8100/__heartbeat__ || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ===========================================================================
+  # REDASH
+  # ===========================================================================
+
+  redash-server:
+    <<: *redash-service
+    container_name: redash-server
+    command: server
+    ports:
+      - "${REDASH_PORT:-5000}:5000"
+    environment:
+      REDASH_WEB_WORKERS: 4
+      REDASH_DATABASE_URL: ${REDASH_DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-redash_secret}@postgres/redash}
+      REDASH_REDIS_URL: ${REDASH_REDIS_URL:-redis://redis:6379/0}
+
+  redash-scheduler:
+    <<: *redash-service
+    container_name: redash-scheduler
+    command: scheduler
+    depends_on:
+      - redash-server
+    environment:
+      REDASH_DATABASE_URL: ${REDASH_DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-redash_secret}@postgres/redash}
+      REDASH_REDIS_URL: ${REDASH_REDIS_URL:-redis://redis:6379/0}
+
+  redash-scheduled-worker:
+    <<: *redash-service
+    container_name: redash-scheduled-worker
+    command: worker
+    depends_on:
+      - redash-server
+    environment:
+      QUEUES: "scheduled_queries,schemas"
+      WORKERS_COUNT: 1
+      REDASH_DATABASE_URL: ${REDASH_DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-redash_secret}@postgres/redash}
+      REDASH_REDIS_URL: ${REDASH_REDIS_URL:-redis://redis:6379/0}
+
+  redash-adhoc-worker:
+    <<: *redash-service
+    container_name: redash-adhoc-worker
+    command: worker
+    depends_on:
+      - redash-server
+    environment:
+      QUEUES: "queries"
+      WORKERS_COUNT: 2
+      REDASH_DATABASE_URL: ${REDASH_DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-redash_secret}@postgres/redash}
+      REDASH_REDIS_URL: ${REDASH_REDIS_URL:-redis://redis:6379/0}
+
+  redash-worker:
+    <<: *redash-service
+    container_name: redash-worker
+    command: worker
+    environment:
+      QUEUES: "periodic,emails,default"
+      WORKERS_COUNT: 1
+      REDASH_DATABASE_URL: ${REDASH_DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-redash_secret}@postgres/redash}
+      REDASH_REDIS_URL: ${REDASH_REDIS_URL:-redis://redis:6379/0}
+
+  redash-nginx:
+    image: redash/nginx:latest
+    container_name: redash-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      - redash-server
+    links:
+      - redash-server:redash
+    restart: always
+    networks:
+      - lrs-network
+
+  # ===========================================================================
+  # SHARED INFRASTRUCTURE
+  # ===========================================================================
+
+  elasticsearch:
+    image: elasticsearch:${ES_VERSION:-8.1.0}
+    container_name: elasticsearch
+    environment:
+      bootstrap.memory_lock: "true"
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      cluster.routing.allocation.disk.watermark.low: "2gb"
+      cluster.routing.allocation.disk.watermark.high: "1gb"
+      cluster.routing.allocation.disk.watermark.flood_stage: "500mb"
+      cluster.info.update.interval: "1m"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    mem_limit: 2g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+    networks:
+      - lrs-network
+    healthcheck:
+      test: curl --fail http://localhost:9200/_cluster/health?wait_for_status=yellow || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  postgres:
+    image: pgautoupgrade/pgautoupgrade:${PG_VERSION:-17-alpine}
+    container_name: redash-postgres
+    environment:
+      POSTGRES_DB: redash
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-redash_secret}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - lrs-network
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    container_name: redash-redis
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - lrs-network
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+# ===========================================================================
+# VOLUMES & NETWORKS
+# ===========================================================================
+
+volumes:
+  es-data:
+    driver: local
+  pg-data:
+    driver: local
+  redis-data:
+    driver: local
+  ralph-data:
+    driver: local
+
+networks:
+  lrs-network:
+    driver: bridge
