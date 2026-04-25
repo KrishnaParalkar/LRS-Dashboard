@@ -51,24 +51,34 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 4. Run the seeding script
-python seed.py
+python seed.py --target ralph   # Send data to Ralph/Elasticsearch
+python seed.py --target sqllrs  # Send data to SQL LRS/PostgreSQL
 ```
 *Note: If 'pip' still shows not found after activation, you can use `python -m pip install -r requirements.txt` instead.*
 *Note: The seeding script uses `127.0.0.1` instead of `localhost` to bypass IPv6 connection reset issues common on Docker Desktop for Mac.*
 
-### 3. Connect Redash to Elasticsearch
-Once the setup is complete and data is seeded, you must connect Redash to Elasticsearch to view the data.
+### 3. Connect Redash to your Data Sources
+Once the setup is complete and data is seeded, you must connect Redash to your LRS backends to view the data.
 
 1. Open Redash at http://localhost:5005
 2. Create your admin account if prompted.
 3. Go to **Settings > Data Sources > New Data Source**.
-4. Select **Elasticsearch**.
-5. Configure it with the following:
-   - **Name:** Ralph LRS
-   - **Base URL:** `http://elasticsearch:9200`
-6. Click **Save** and **Test Connection**.
 
-You can now navigate to **Queries**, select the "Ralph LRS" data source, and query the `statements` index!
+**Option A: Connect to Ralph (Elasticsearch)**
+- Select **Elasticsearch**.
+- **Name:** Ralph LRS
+- **Base URL:** `http://elasticsearch:9200`
+
+**Option B: Connect to SQL LRS (PostgreSQL)**
+- Select **PostgreSQL**.
+- **Name:** SQL LRS
+- **Host:** `postgres-lrs`
+- **Port:** `5432`
+- **User:** `lrsql`
+- **Password:** `lrsql_secret`
+- **Database Name:** `lrsql`
+
+Click **Save** and **Test Connection** for whichever sources you added. You can now navigate to **Queries** and start querying your data!
 
 ## Services Overview
 
@@ -76,7 +86,9 @@ You can now navigate to **Queries**, select the "Ralph LRS" data source, and que
 |---------|-----|-------------|
 | Redash | http://localhost:5005 | Dashboard & data visualization (Your UI) |
 | Ralph LRS | http://localhost:8100 | xAPI Learning Record Store (Headless API) |
-| Elasticsearch | http://localhost:9200 | Data storage backend |
+| Elasticsearch | http://localhost:9200 | Data storage backend for Ralph |
+| SQL LRS | http://localhost:8080 | Alternative xAPI LRS using PostgreSQL |
+| PostgreSQL | localhost:5432 | Data storage backend for SQL LRS |
 | Redash (nginx) | http://localhost:80 | Production reverse proxy |
 
 ## Default Credentials

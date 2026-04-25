@@ -16,14 +16,24 @@ import random
 import uuid
 import datetime
 import base64
+import argparse
 from dotenv import load_dotenv
 
 load_dotenv()
 
+parser = argparse.ArgumentParser(description="Generate and send xAPI statements.")
+parser.add_argument("--target", choices=["ralph", "sqllrs"], default="ralph", help="The target LRS to send statements to.")
+args = parser.parse_args()
+
 # --- CONFIG ---
-LRS_ENDPOINT = os.getenv("LRS_PUBLIC_URL", "http://127.0.0.1:8100") + "/xAPI/statements"
-API_KEY = os.getenv("LRS_API_KEY", "ralph")
-API_SECRET = os.getenv("LRS_API_SECRET", "secret")
+if args.target == "sqllrs":
+    LRS_ENDPOINT = "http://127.0.0.1:8080/xapi/statements"
+    API_KEY = "admin"
+    API_SECRET = "admin"
+else:
+    LRS_ENDPOINT = os.getenv("LRS_PUBLIC_URL", "http://127.0.0.1:8100") + "/xAPI/statements"
+    API_KEY = os.getenv("LRS_API_KEY", "ralph")
+    API_SECRET = os.getenv("LRS_API_SECRET", "secret")
 
 CONTEXT_BASE = "https://example.ai/context/"
 COURSE_ID = "SEC-AWARE-01"
